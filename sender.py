@@ -171,6 +171,26 @@ async def send_with_retry(page, username: str, message: str) -> Result:
     return await send_one(page, username, message)
 
 
+async def check_login(cookies: list[dict]) -> str | None:
+    """Открывает TikTok. Возвращает мешающую проверку или None, если вход виден."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(locale="en-US", viewport={"width": 1366, "height": 850})
+        await context.add_cookies(cookies)
+        page = await context.new_page()
+        try:
+            kind = None
+            for _ in range(2):
+                await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded")
+                await page.wait_for_timeout(6000)
+                kind = await find_blocker(page)
+                if kind != "logged_out":
+                    break
+            return kind
+        finally:
+            await browser.close()
+
+
 async def run(cookies: list[dict], recipients: list[str], message: str) -> Report:
     report = Report()
     async with async_playwright() as p:
