@@ -160,6 +160,17 @@ async def send_one(page, username: str, message: str) -> Result:
     return Result(username, UNCONFIRMED, "в чате сообщения не видно")
 
 
+async def send_with_retry(page, username: str, message: str) -> Result:
+    """Сразу после открытия сайт может ещё не подхватить сессию, поэтому вход проверяем дважды."""
+    try:
+        return await send_one(page, username, message)
+    except Blocked as e:
+        if e.kind != "logged_out":
+            raise
+    await page.wait_for_timeout(5000)
+    return await send_one(page, username, message)
+
+
 async def run(cookies: list[dict], recipients: list[str], message: str) -> Report:
     report = Report()
     async with async_playwright() as p:
@@ -170,7 +181,7 @@ async def run(cookies: list[dict], recipients: list[str], message: str) -> Repor
         try:
             for i, username in enumerate(recipients):
                 try:
-                    report.results.append(await send_one(page, username, message))
+                    report.results.append(await send_with_retry(page, username, message))
                 except Blocked as e:
                     report.blocker = e.kind
                     report.screenshot = await page.screenshot()
