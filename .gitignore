@@ -1,0 +1,6 @@
+cookies*.json
+state.json
+.env
+__pycache__/
+.venv/
+data/
