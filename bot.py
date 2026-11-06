@@ -50,9 +50,9 @@ HELP = """Команды:
 /remove ник — убрать человека
 /message 🔥 — текст (варианты через |)
 /on и /off — включить и выключить расписание
-/id — показать ваш Telegram ID
-
-Чтобы обновить cookies, пришлите файл cookies.json."""
+/links — ссылки на профили для ручной отправки
+/login — войти: пришлите файл cookies.json
+/id — показать ваш Telegram ID"""
 
 
 def load_state() -> dict:
@@ -80,6 +80,10 @@ def clean_username(text: str) -> str | None:
     return name if re.fullmatch(r"[A-Za-z0-9_.]{2,24}", name) else None
 
 
+def profile_links(names: list[str]) -> str:
+    return "\n".join(f"https://www.tiktok.com/@{u}" for u in names)
+
+
 def format_report(report: sender.Report) -> str:
     lines = [f"{STATUS_ICON[r.status]} @{r.username}: {STATUS_TEXT[r.status]}" + (f" ({r.detail})" if r.detail else "")
              for r in report.results]
@@ -89,7 +93,11 @@ def format_report(report: sender.Report) -> str:
         head += " Отправьте остальным вручную, иначе серия может сгореть."
     if report.blocker:
         head = BLOCKER_TEXT[report.blocker] + "\n" + head
-    return head + "\n\n" + "\n".join(lines)
+    text = head + "\n\n" + "\n".join(lines)
+    missing = [r.username for r in report.results if r.status != sender.SENT]
+    if missing:
+        text += "\n\nОтправить вручную:\n" + profile_links(missing)
+    return text
 
 
 def schedule(app: Application, state: dict) -> None:
@@ -145,6 +153,17 @@ async def cmd_status(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         f"Расписание: {'включено' if s['enabled'] else 'выключено'}\n"
         f"Время: {s['time']}\nТекст: {s['message']}\nЛюди: {people}\n"
         f"Cookies: {'есть' if COOKIES_FILE.exists() else 'нет'}"
+    )
+
+
+async def cmd_links(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    names = load_state()["recipients"]
+    await update.message.reply_text(profile_links(names) if names else "Список пуст. Добавьте людей: /add ник")
+
+
+async def cmd_login(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Пришлите файл cookies.json из Cookie-Editor. Я сохраню его, удалю из чата и проверю вход в TikTok."
     )
 
 
@@ -223,7 +242,20 @@ async def on_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     COOKIES_FILE.write_text(raw, encoding="utf-8")
     COOKIES_FILE.chmod(0o600)
-    await context.bot.send_message(update.effective_chat.id, "Cookies сохранены, файл из чата удалён.")
+    chat = update.effective_chat.id
+    await context.bot.send_message(chat, "Cookies сохранены, файл из чата удалён. Проверяю вход...")
+    lock: asyncio.Lock = context.application.bot_data["lock"]
+    if lock.locked():
+        await context.bot.send_message(chat, "Сейчас идёт отправка, вход проверю при следующем запуске.")
+        return
+    async with lock:
+        try:
+            kind = await sender.check_login(sender.parse_cookies(raw))
+        except Exception as e:  # noqa: BLE001
+            logging.exception("login check failed")
+            await context.bot.send_message(chat, f"Вход проверить не удалось: {type(e).__name__}")
+            return
+    await context.bot.send_message(chat, BLOCKER_TEXT[kind] if kind else "✅ Вход в TikTok виден.")
 
 
 async def post_init(app: Application) -> None:
@@ -233,6 +265,7 @@ async def post_init(app: Application) -> None:
         BotCommand("time", "Время отправки"), BotCommand("add", "Добавить людей"),
         BotCommand("remove", "Убрать человека"), BotCommand("message", "Текст"),
         BotCommand("on", "Включить расписание"), BotCommand("off", "Выключить расписание"),
+        BotCommand("links", "Ссылки на профили"), BotCommand("login", "Войти через cookies.json"),
     ])
 
 
@@ -257,7 +290,7 @@ def main() -> None:
     for name, handler in {
         "start": cmd_start, "help": cmd_start, "id": cmd_id, "status": cmd_status, "send": cmd_send,
         "time": cmd_time, "add": cmd_add, "remove": cmd_remove, "message": cmd_message,
-        "on": cmd_on, "off": cmd_off,
+        "on": cmd_on, "off": cmd_off, "links": cmd_links, "login": cmd_login,
     }.items():
         app.add_handler(CommandHandler(name, handler, filters=only_owner))
     app.add_handler(MessageHandler(only_owner & filters.Document.ALL, on_cookies))
